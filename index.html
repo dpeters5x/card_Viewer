@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SVG Browser</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel-bg: #1f2430;
+      --panel-fg: #f3f4f6;
+      --checker-a: #f0f0f0;
+      --checker-b: #dcdcdc;
+      --border: #d0d7de;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: system-ui, sans-serif;
+      background: #f6f8fa;
+      color: #111827;
+    }
+
+    body {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 0.75rem;
+      align-items: center;
+      padding: 0.75rem;
+      background: var(--panel-bg);
+      color: var(--panel-fg);
+      border-bottom: 1px solid #00000033;
+    }
+
+    .toolbar label,
+    .toolbar button,
+    .toolbar select,
+    .toolbar input {
+      font: inherit;
+    }
+
+    .toolbar .group {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .toolbar button,
+    .toolbar select,
+    .toolbar input[type="color"] {
+      padding: 0.35rem 0.5rem;
+      border-radius: 0.4rem;
+      border: 1px solid #00000055;
+    }
+
+    .toolbar button {
+      background: #2c3444;
+      color: white;
+      cursor: pointer;
+    }
+
+    .toolbar button:hover:not(:disabled) {
+      background: #39445a;
+    }
+
+    .toolbar button:disabled,
+    .toolbar select:disabled,
+    .toolbar input:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .toolbar select {
+      min-width: 220px;
+      max-width: 420px;
+    }
+
+    .toolbar input[type="range"] {
+      width: 160px;
+    }
+
+    .viewer-shell {
+      position: relative;
+      overflow: hidden;
+      background: var(--bg);
+      min-height: 0;
+    }
+
+    .viewer-shell.checker {
+      background-image:
+        linear-gradient(45deg, var(--checker-a) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--checker-a) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--checker-a) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--checker-a) 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0px;
+      background-color: var(--checker-b);
+    }
+
+    .stage {
+      position: absolute;
+      inset: 0;
+      cursor: grab;
+    }
+
+    .stage.dragging {
+      cursor: grabbing;
+    }
+
+    .svg-wrap {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform-origin: top left;
+      will-change: transform;
+    }
+
+    .svg-wrap svg,
+    .svg-wrap img {
+      display: block;
+      max-width: none;
+      max-height: none;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+    }
+
+    .overlay-message {
+      position: absolute;
+      inset: 0;
+      display: none;
+      place-items: center;
+      text-align: center;
+      padding: 1rem;
+      color: #374151;
+      background: transparent;
+      pointer-events: none;
+    }
+
+    .overlay-message.visible {
+      display: grid;
+    }
+
+    .overlay-message.error {
+      color: #991b1b;
+    }
+
+    .hint {
+      font-size: 0.9rem;
+      opacity: 0.8;
+    }
+
+    .footer-status {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.92rem;
+      color: #374151;
+      background: #eef2f7;
+      border-top: 1px solid var(--border);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="group">
+      <button id="prevBtn" type="button">Prev</button>
+      <button id="nextBtn" type="button">Next</button>
+    </div>
+
+    <div class="group">
+      <label for="fileSelect">SVG</label>
+      <select id="fileSelect"></select>
+    </div>
+
+    <div class="group">
+      <label for="zoomRange">Zoom</label>
+      <button id="zoomOutBtn" type="button">-</button>
+      <input id="zoomRange" type="range" min="0.1" max="8" step="0.05" value="1" />
+      <button id="zoomInBtn" type="button">+</button>
+      <span id="zoomLabel">100%</span>
+    </div>
+
+    <div class="group">
+      <button id="fitBtn" type="button">Fit</button>
+      <button id="resetBtn" type="button">Reset</button>
+    </div>
+
+    <div class="group">
+      <label for="bgColor">Background</label>
+      <input id="bgColor" type="color" value="#ffffff" />
+    </div>
+
+    <div class="group">
+      <label><input id="checkerToggle" type="checkbox" /> Checker</label>
+    </div>
+  </div>
+
+  <div id="viewerShell" class="viewer-shell">
+    <div id="stage" class="stage">
+      <div id="svgWrap" class="svg-wrap"></div>
+      <div id="message" class="overlay-message"></div>
+    </div>
+  </div>
+
+  <div class="footer-status" id="statusText">Ready</div>
+
+  <script>
+    const manifestUrl = './manifest.json';
+    const svgBasePath = './svg_cards/';
+
+    const fileSelect = document.getElementById('fileSelect');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const fitBtn = document.getElementById('fitBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const zoomRange = document.getElementById('zoomRange');
+    const zoomLabel = document.getElementById('zoomLabel');
+    const zoomOutBtn = document.getElementById('zoomOutBtn');
+    const zoomInBtn = document.getElementById('zoomInBtn');
+    const bgColor = document.getElementById('bgColor');
+    const checkerToggle = document.getElementById('checkerToggle');
+    const viewerShell = document.getElementById('viewerShell');
+    const stage = document.getElementById('stage');
+    const svgWrap = document.getElementById('svgWrap');
+    const message = document.getElementById('message');
+    const statusText = document.getElementById('statusText');
+
+    let files = [];
+    let currentIndex = -1;
+
+    let scale = 1;
+    let offsetX = 20;
+    let offsetY = 20;
+
+    let dragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragOriginX = 0;
+    let dragOriginY = 0;
+
+    let svgNaturalWidth = 100;
+    let svgNaturalHeight = 100;
+
+    function setStatus(text) {
+      statusText.textContent = text;
+    }
+
+    function showMessage(html, isError = false) {
+      message.innerHTML = html;
+      message.className = isError ? 'overlay-message visible error' : 'overlay-message visible';
+    }
+
+    function hideMessage() {
+      message.innerHTML = '';
+      message.className = 'overlay-message';
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function updateTransform() {
+      svgWrap.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+      zoomRange.value = String(scale);
+      zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+    }
+
+    function updateButtons() {
+      const hasFiles = files.length > 0;
+      const hasSelection = currentIndex >= 0 && currentIndex < files.length;
+
+      fileSelect.disabled = !hasFiles;
+      prevBtn.disabled = !hasSelection || currentIndex === 0;
+      nextBtn.disabled = !hasSelection || currentIndex === files.length - 1;
+      fitBtn.disabled = !hasSelection;
+      resetBtn.disabled = !hasSelection;
+      zoomRange.disabled = !hasSelection;
+      zoomOutBtn.disabled = !hasSelection;
+      zoomInBtn.disabled = !hasSelection;
+    }
+
+    function setBackground() {
+      viewerShell.style.setProperty('--bg', bgColor.value);
+      viewerShell.classList.toggle('checker', checkerToggle.checked);
+    }
+
+    function parseSvgDimensions(svgElement) {
+      const viewBox = svgElement.viewBox && svgElement.viewBox.baseVal;
+      const widthAttr = svgElement.getAttribute('width');
+      const heightAttr = svgElement.getAttribute('height');
+
+      const parsedWidth = widthAttr ? parseFloat(widthAttr) : NaN;
+      const parsedHeight = heightAttr ? parseFloat(heightAttr) : NaN;
+
+      if (viewBox && viewBox.width > 0 && viewBox.height > 0) {
+        return { width: viewBox.width, height: viewBox.height };
+      }
+
+      if (!Number.isNaN(parsedWidth) && !Number.isNaN(parsedHeight) && parsedWidth > 0 && parsedHeight > 0) {
+        return { width: parsedWidth, height: parsedHeight };
+      }
+
+      const bbox = svgElement.getBBox?.();
+      if (bbox && bbox.width > 0 && bbox.height > 0) {
+        return { width: bbox.width, height: bbox.height };
+      }
+
+      return { width: 100, height: 100 };
+    }
+
+    function escapeHtml(s) {
+      return s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function fitToWindow() {
+      if (svgNaturalWidth <= 0 || svgNaturalHeight <= 0) return;
+
+      const shellRect = viewerShell.getBoundingClientRect();
+      const padding = 30;
+
+      const availableWidth = Math.max(50, shellRect.width - padding * 2);
+      const availableHeight = Math.max(50, shellRect.height - padding * 2);
+
+      const sx = availableWidth / svgNaturalWidth;
+      const sy = availableHeight / svgNaturalHeight;
+
+      scale = clamp(Math.min(sx, sy), 0.05, 8);
+
+      const renderedWidth = svgNaturalWidth * scale;
+      const renderedHeight = svgNaturalHeight * scale;
+
+      offsetX = (shellRect.width - renderedWidth) / 2;
+      offsetY = (shellRect.height - renderedHeight) / 2;
+
+      updateTransform();
+    }
+
+	function resetView() {
+	  if (svgNaturalWidth <= 0 || svgNaturalHeight <= 0) return;
+
+	  const shellRect = viewerShell.getBoundingClientRect();
+
+	  scale = 1;
+
+	  const renderedWidth = svgNaturalWidth * scale;
+	  const renderedHeight = svgNaturalHeight * scale;
+
+	  offsetX = (shellRect.width - renderedWidth) / 2;
+	  offsetY = (shellRect.height - renderedHeight) / 2;
+
+	  updateTransform();
+	}
+
+    function zoomCentered(newScale) {
+      const rect = viewerShell.getBoundingClientRect();
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+
+      newScale = clamp(newScale, 0.05, 8);
+
+      const contentX = (centerX - offsetX) / scale;
+      const contentY = (centerY - offsetY) / scale;
+
+      scale = newScale;
+      offsetX = centerX - contentX * scale;
+      offsetY = centerY - contentY * scale;
+
+      updateTransform();
+    }
+
+    async function loadSvgAt(index) {
+      if (index < 0 || index >= files.length) return;
+
+      currentIndex = index;
+      fileSelect.value = files[index];
+
+      const fileName = files[index];
+      const url = svgBasePath + encodeURIComponent(fileName);
+
+      setStatus(`Loading ${fileName}...`);
+      hideMessage();
+      updateButtons();
+
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} while loading ${fileName}`);
+        }
+
+        const text = await response.text();
+        svgWrap.innerHTML = text;
+
+        const svgElement = svgWrap.querySelector('svg');
+        if (!svgElement) {
+          throw new Error(`${fileName} did not contain an <svg> root element.`);
+        }
+
+        const dims = parseSvgDimensions(svgElement);
+        svgNaturalWidth = dims.width;
+        svgNaturalHeight = dims.height;
+
+        hideMessage();
+        fitToWindow();
+        setStatus(`${fileName} — ${Math.round(svgNaturalWidth)} × ${Math.round(svgNaturalHeight)}`);
+      } catch (err) {
+        svgWrap.innerHTML = '';
+        showMessage(
+          `<div><strong>Could not load ${escapeHtml(fileName)}</strong></div><div class="hint">${escapeHtml(err.message)}</div>`,
+          true
+        );
+        setStatus(`Error loading ${fileName}`);
+      }
+
+      updateButtons();
+    }
+
+    fileSelect.addEventListener('change', () => {
+      const idx = files.indexOf(fileSelect.value);
+      if (idx >= 0) loadSvgAt(idx);
+    });
+
+    prevBtn.addEventListener('click', () => {
+      if (currentIndex > 0) loadSvgAt(currentIndex - 1);
+    });
+
+    nextBtn.addEventListener('click', () => {
+      if (currentIndex < files.length - 1) loadSvgAt(currentIndex + 1);
+    });
+
+    fitBtn.addEventListener('click', fitToWindow);
+    resetBtn.addEventListener('click', resetView);
+
+    zoomRange.addEventListener('input', (e) => {
+      zoomCentered(parseFloat(e.target.value));
+    });
+
+    zoomOutBtn.addEventListener('click', () => {
+      zoomCentered(scale / 1.2);
+    });
+
+    zoomInBtn.addEventListener('click', () => {
+      zoomCentered(scale * 1.2);
+    });
+
+    bgColor.addEventListener('input', setBackground);
+    checkerToggle.addEventListener('change', setBackground);
+
+    stage.addEventListener('pointerdown', (e) => {
+      if (currentIndex < 0) return;
+      dragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragOriginX = offsetX;
+      dragOriginY = offsetY;
+      stage.classList.add('dragging');
+      stage.setPointerCapture(e.pointerId);
+    });
+
+    stage.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      offsetX = dragOriginX + (e.clientX - dragStartX);
+      offsetY = dragOriginY + (e.clientY - dragStartY);
+      updateTransform();
+    });
+
+    stage.addEventListener('pointerup', (e) => {
+      dragging = false;
+      stage.classList.remove('dragging');
+      stage.releasePointerCapture?.(e.pointerId);
+    });
+
+    stage.addEventListener('pointercancel', () => {
+      dragging = false;
+      stage.classList.remove('dragging');
+    });
+
+    viewerShell.addEventListener('wheel', (e) => {
+      if (currentIndex < 0) return;
+      e.preventDefault();
+
+      const factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
+      zoomCentered(scale * factor);
+    }, { passive: false });
+
+    window.addEventListener('resize', () => {
+      if (currentIndex >= 0) {
+        updateTransform();
+      }
+    });
+
+    async function init() {
+      setBackground();
+      hideMessage();
+
+      try {
+        const response = await fetch(manifestUrl, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} while loading manifest.json`);
+        }
+
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+          throw new Error('manifest.json must be a JSON array of file names.');
+        }
+
+        files = data.filter(x => typeof x === 'string' && x.trim().length > 0);
+
+        fileSelect.innerHTML = '';
+
+        for (const file of files) {
+          const option = document.createElement('option');
+          option.value = file;
+          option.textContent = file;
+          fileSelect.appendChild(option);
+        }
+
+        if (files.length === 0) {
+          showMessage('<div><strong>No SVG files listed in manifest.json.</strong></div>', true);
+          setStatus('No files');
+        } else {
+          await loadSvgAt(0);
+        }
+      } catch (err) {
+        showMessage(
+          `<div><strong>Startup failed</strong></div><div class="hint">${escapeHtml(err.message)}</div>`,
+          true
+        );
+        setStatus('Startup failed');
+      }
+
+      updateButtons();
+    }
+
+    init();
+  </script>
+</body>
+</html>
