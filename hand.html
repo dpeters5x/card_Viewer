@@ -103,6 +103,33 @@
       min-width: 3em;
     }
 
+    /* ── Layout toggle ── */
+    .layout-toggle {
+      display: flex;
+      border: 1px solid #555;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .layout-btn {
+      background: #3a3a3a;
+      color: #aaa;
+      border: none;
+      padding: 3px 11px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .layout-btn:not(:last-child) {
+      border-right: 1px solid #555;
+    }
+
+    .layout-btn.active {
+      background: #4a9eff;
+      color: #fff;
+    }
+
     /* ── Canvas ── */
     .canvas-area {
       flex: 1;
@@ -158,6 +185,15 @@
     <div class="sep"></div>
 
     <div class="control">
+      <div class="layout-toggle">
+        <button class="layout-btn active" id="btnRow">Row</button>
+        <button class="layout-btn"        id="btnFan">Fan</button>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="control">
       <label for="cardCount">Cards:</label>
       <input type="number" id="cardCount" min="1" max="13" value="5">
     </div>
@@ -196,8 +232,7 @@
   <div class="status-bar" id="statusBar">Ready</div>
 
   <script>
-    // A representative 13-card "hand" used as the source when count <= 13.
-    // Cards are shown left-to-right: first N of this list.
+    // A representative 13-card "hand". First N cards are shown.
     const SAMPLE_HAND = [
       'AH', '2D', 'TC', 'JH', 'QS',
       'KD', '9H', '3C', '7S', '5D',
@@ -205,67 +240,158 @@
     ];
 
     // Natural card aspect ratio: viewBox 240 × 336  →  5 : 7
-    const BASE_W = 72;               // px wide at scale 1×
-    const BASE_H = BASE_W * 336 / 240; // px tall at scale 1×  (≈ 100.8)
+    const BASE_W = 72;
+    const BASE_H = BASE_W * 336 / 240; // ≈ 100.8 px at scale 1×
 
-    const cardCountEl  = document.getElementById('cardCount');
-    const scaleRangeEl = document.getElementById('scaleRange');
-    const scaleValEl   = document.getElementById('scaleVal');
+    // Maximum angular step between adjacent cards (degrees) when spread = 1
+    const MAX_ANGLE_PER_CARD = 15;
+
+    // Pivot distance below card bottom, as a multiple of card height
+    const PIVOT_FACTOR = 2.5;
+
+    const cardCountEl    = document.getElementById('cardCount');
+    const scaleRangeEl   = document.getElementById('scaleRange');
+    const scaleValEl     = document.getElementById('scaleVal');
     const overlapRangeEl = document.getElementById('overlapRange');
     const overlapValEl   = document.getElementById('overlapVal');
-    const deckSelectEl = document.getElementById('deckSelect');
-    const handContainer = document.getElementById('handContainer');
-    const statusBar     = document.getElementById('statusBar');
+    const deckSelectEl   = document.getElementById('deckSelect');
+    const handContainer  = document.getElementById('handContainer');
+    const statusBar      = document.getElementById('statusBar');
+    const btnRow         = document.getElementById('btnRow');
+    const btnFan         = document.getElementById('btnFan');
 
-    function render() {
-      const count   = Math.min(Math.max(parseInt(cardCountEl.value, 10) || 1, 1), 13);
-      const scale   = parseFloat(scaleRangeEl.value);
-      const spread  = parseFloat(overlapRangeEl.value); // 0=stacked, 1=adjacent
-      const deck    = deckSelectEl.value;
+    let layout = 'row'; // 'row' | 'fan'
 
+    // ── Layout toggle ──────────────────────────────────────────────
+    btnRow.addEventListener('click', () => {
+      layout = 'row';
+      btnRow.classList.add('active');
+      btnFan.classList.remove('active');
+      render();
+    });
+
+    btnFan.addEventListener('click', () => {
+      layout = 'fan';
+      btnFan.classList.add('active');
+      btnRow.classList.remove('active');
+      render();
+    });
+
+    // ── Helpers ────────────────────────────────────────────────────
+    function makeCardSlot(cardCode, deck, cardW, cardH) {
+      const slot = document.createElement('div');
+      slot.className = 'card-slot';
+      slot.style.width  = cardW + 'px';
+      slot.style.height = cardH + 'px';
+
+      const img = document.createElement('img');
+      img.src = `./${deck}/${cardCode}.svg`;
+      img.alt = cardCode;
+      slot.appendChild(img);
+      return slot;
+    }
+
+    // ── Row layout ─────────────────────────────────────────────────
+    function renderRow(count, scale, spread, deck) {
       const cardW = BASE_W * scale;
       const cardH = BASE_H * scale;
 
-      // Horizontal step between successive card left edges.
-      // spread=0 → step=0 (all stacked), spread=1 → step=cardW (fully adjacent)
-      const step = spread * cardW;
-
-      // Total bounding box for the hand
+      // spread=0 → all stacked; spread=1 → fully adjacent (step = cardW)
+      const step   = spread * cardW;
       const totalW = count === 1 ? cardW : cardW + (count - 1) * step;
-      const totalH = cardH;
 
       handContainer.style.width  = totalW + 'px';
-      handContainer.style.height = totalH + 'px';
-
-      // Rebuild child elements
+      handContainer.style.height = cardH   + 'px';
       handContainer.innerHTML = '';
 
       for (let i = 0; i < count; i++) {
-        const cardCode = SAMPLE_HAND[i];
-        const slot = document.createElement('div');
-        slot.className = 'card-slot';
+        const slot = makeCardSlot(SAMPLE_HAND[i], deck, cardW, cardH);
         slot.style.left   = (i * step) + 'px';
-        slot.style.width  = cardW + 'px';
-        slot.style.height = cardH + 'px';
-        slot.style.zIndex = i;           // later cards appear on top
-
-        const img = document.createElement('img');
-        img.src = `./${deck}/${cardCode}.svg`;
-        img.alt = cardCode;
-        slot.appendChild(img);
+        slot.style.top    = '0px';
+        slot.style.zIndex = i;
         handContainer.appendChild(slot);
       }
 
-      // Update displayed values
+      const overlapPct = Math.round((1 - spread) * 100);
+      return `row  ·  ${overlapPct}% overlap`;
+    }
+
+    // ── Fan layout ─────────────────────────────────────────────────
+    function renderFan(count, scale, spread, deck) {
+      const cardW = BASE_W * scale;
+      const cardH = BASE_H * scale;
+
+      // Angular step between adjacent cards (degrees)
+      const angleStep = spread * MAX_ANGLE_PER_CARD;
+
+      // Pivot is PIVOT_FACTOR × cardH below the card bottom.
+      // Radius is measured from pivot to card centre.
+      const pivotDist = PIVOT_FACTOR * cardH;
+      const R         = pivotDist + cardH / 2;
+
+      // Half-diagonal of a single card (conservative bounding clearance)
+      const halfDiag = Math.hypot(cardW / 2, cardH / 2);
+      const pad = 24;
+
+      // Maximum angle from the centre card to either edge card
+      const halfSpanDeg = ((count - 1) / 2) * angleStep;
+      const halfSpanRad = halfSpanDeg * Math.PI / 180;
+
+      // Container dimensions:
+      //   Height — pivot sits at the bottom edge; tallest point is centre-card top
+      //   Width  — widest points are the outermost rotated cards
+      const containerH = Math.ceil(R + halfDiag + pad);
+      const containerW = Math.ceil(2 * (R * Math.sin(halfSpanRad) + halfDiag) + 2 * pad);
+      const finalW     = Math.max(containerW, cardW + 2 * pad);
+
+      handContainer.style.width  = finalW     + 'px';
+      handContainer.style.height = containerH + 'px';
+      handContainer.innerHTML = '';
+
+      // Pivot expressed in container coordinates
+      const pivotX = finalW / 2;
+      const pivotY = containerH; // at the very bottom of the container
+
+      for (let i = 0; i < count; i++) {
+        // Angle for this card (negative = left of centre, positive = right)
+        const angleDeg = (i - (count - 1) / 2) * angleStep;
+        const angleRad = angleDeg * Math.PI / 180;
+
+        // Card centre on the arc
+        const cx = pivotX + R * Math.sin(angleRad);
+        const cy = pivotY - R * Math.cos(angleRad);
+
+        const slot = makeCardSlot(SAMPLE_HAND[i], deck, cardW, cardH);
+        slot.style.left            = (cx - cardW / 2) + 'px';
+        slot.style.top             = (cy - cardH / 2) + 'px';
+        slot.style.zIndex          = i;
+        slot.style.transform       = `rotate(${angleDeg}deg)`;
+        slot.style.transformOrigin = 'center center';
+        handContainer.appendChild(slot);
+      }
+
+      const totalSpanDeg = (count - 1) * angleStep;
+      return `fan  ·  ${totalSpanDeg.toFixed(1)}° total spread`;
+    }
+
+    // ── Main render ────────────────────────────────────────────────
+    function render() {
+      const count  = Math.min(Math.max(parseInt(cardCountEl.value, 10) || 1, 1), 13);
+      const scale  = parseFloat(scaleRangeEl.value);
+      const spread = parseFloat(overlapRangeEl.value);
+      const deck   = deckSelectEl.value;
+
       scaleValEl.textContent   = scale.toFixed(2) + '×';
       overlapValEl.textContent = spread.toFixed(2);
 
-      // Status
-      const overlapPct = Math.round((1 - spread) * 100);
+      const detail = layout === 'fan'
+        ? renderFan(count, scale, spread, deck)
+        : renderRow(count, scale, spread, deck);
+
       statusBar.textContent =
         `${count} card${count !== 1 ? 's' : ''}  ·  ` +
         `scale ${scale.toFixed(2)}×  ·  ` +
-        `${overlapPct}% overlap  ·  ` +
+        `${detail}  ·  ` +
         `deck: ${deck}`;
     }
 
