@@ -152,6 +152,22 @@
     .card-slot {
       position: absolute;
       top: 0;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .card-slot.dragging {
+      opacity: 0.85;
+      cursor: grabbing;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+    }
+
+    .drag-ghost {
+      background: rgba(255, 255, 255, 0.18);
+      border: 2px dashed rgba(255, 255, 255, 0.55);
+      border-radius: 5px;
+      pointer-events: none;
+      transition: left 0.12s ease, top 0.12s ease, transform 0.12s ease;
     }
 
     .card-slot img {
@@ -262,6 +278,15 @@
 
     let layout = 'row'; // 'row' | 'fan'
 
+    // ── Drag state ─────────────────────────────────────────────────
+    let isDragging = false;
+    let dragSourceIndex = -1;
+    let dragTargetIndex = -1;
+    let dragEl = null;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let slotPositions = []; // {left, top, transform} for each slot after render
+
     // ── Layout toggle ──────────────────────────────────────────────
     btnRow.addEventListener('click', () => {
       layout = 'row';
@@ -311,6 +336,11 @@
         slot.style.zIndex = i;
         handContainer.appendChild(slot);
       }
+
+      slotPositions = Array.from(handContainer.querySelectorAll('.card-slot')).map(s => ({
+        left: s.style.left, top: s.style.top, transform: s.style.transform || ''
+      }));
+      attachDragListeners();
 
       const overlapPct = Math.round((1 - spread) * 100);
       return `row  ·  ${overlapPct}% overlap`;
@@ -370,12 +400,137 @@
         handContainer.appendChild(slot);
       }
 
+      slotPositions = Array.from(handContainer.querySelectorAll('.card-slot')).map(s => ({
+        left: s.style.left, top: s.style.top, transform: s.style.transform || ''
+      }));
+      attachDragListeners();
+
       const totalSpanDeg = (count - 1) * angleStep;
       return `fan  ·  ${totalSpanDeg.toFixed(1)}° total spread`;
     }
 
+    // ── Drag and drop ──────────────────────────────────────────────
+    function attachDragListeners() {
+      handContainer.querySelectorAll('.card-slot').forEach((slot, i) => {
+        slot.dataset.index = i;
+        slot.addEventListener('pointerdown', onDragStart);
+      });
+    }
+
+    function onDragStart(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+
+      isDragging = true;
+      dragEl = e.currentTarget;
+      dragSourceIndex = parseInt(dragEl.dataset.index, 10);
+      dragTargetIndex = dragSourceIndex;
+
+      dragEl.setPointerCapture(e.pointerId);
+
+      const rect = dragEl.getBoundingClientRect();
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+
+      dragEl.style.zIndex = 9999;
+      dragEl.classList.add('dragging');
+      dragEl.style.transition = 'none';
+      // Remove rotation while held (fan layout), add lift
+      dragEl.style.transform = (dragEl.style.transform || '')
+        .replace(/rotate\([^)]+\)/g, '')
+        + ' scale(1.06) translateY(-8px)';
+
+      createGhostSlot();
+
+      dragEl.addEventListener('pointermove', onDragMove);
+      dragEl.addEventListener('pointerup', onDragEnd);
+      dragEl.addEventListener('pointercancel', onDragEnd);
+    }
+
+    function createGhostSlot() {
+      const ghost = document.createElement('div');
+      ghost.id = 'dragGhost';
+      ghost.className = 'card-slot drag-ghost';
+      ghost.style.width     = dragEl.style.width;
+      ghost.style.height    = dragEl.style.height;
+      ghost.style.left      = slotPositions[dragSourceIndex].left;
+      ghost.style.top       = slotPositions[dragSourceIndex].top;
+      ghost.style.transform = slotPositions[dragSourceIndex].transform;
+      ghost.style.zIndex    = 0;
+      handContainer.appendChild(ghost);
+    }
+
+    function onDragMove(e) {
+      if (!isDragging) return;
+
+      const containerRect = handContainer.getBoundingClientRect();
+      const localX = e.clientX - containerRect.left - dragOffsetX;
+      const localY = e.clientY - containerRect.top  - dragOffsetY;
+
+      dragEl.style.left = localX + 'px';
+      dragEl.style.top  = localY + 'px';
+
+      const newTarget = hitTestInsertionIndex(e.clientX, e.clientY);
+      if (newTarget !== dragTargetIndex) {
+        dragTargetIndex = newTarget;
+        updateGhostPosition(newTarget);
+      }
+    }
+
+    function hitTestInsertionIndex(clientX, clientY) {
+      const slots = handContainer.querySelectorAll('.card-slot:not(#dragGhost):not(.dragging)');
+      let bestIndex = dragSourceIndex;
+      let bestDist = Infinity;
+
+      slots.forEach(slot => {
+        const rect = slot.getBoundingClientRect();
+        const cx = (rect.left + rect.right) / 2;
+        const dist = Math.abs(clientX - cx);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIndex = parseInt(slot.dataset.index, 10);
+        }
+      });
+
+      return bestIndex;
+    }
+
+    function updateGhostPosition(index) {
+      const ghost = document.getElementById('dragGhost');
+      if (!ghost || !slotPositions[index]) return;
+      const p = slotPositions[index];
+      ghost.style.left      = p.left;
+      ghost.style.top       = p.top;
+      ghost.style.transform = p.transform;
+    }
+
+    function onDragEnd(e) {
+      if (!isDragging) return;
+
+      dragEl.removeEventListener('pointermove', onDragMove);
+      dragEl.removeEventListener('pointerup', onDragEnd);
+      dragEl.removeEventListener('pointercancel', onDragEnd);
+
+      if (dragTargetIndex !== dragSourceIndex) {
+        const card = SAMPLE_HAND.splice(dragSourceIndex, 1)[0];
+        SAMPLE_HAND.splice(dragTargetIndex, 0, card);
+      }
+
+      const ghost = document.getElementById('dragGhost');
+      if (ghost) ghost.remove();
+      dragEl.classList.remove('dragging');
+
+      isDragging = false;
+      dragEl = null;
+      dragSourceIndex = -1;
+      dragTargetIndex = -1;
+
+      render();
+    }
+
     // ── Main render ────────────────────────────────────────────────
     function render() {
+      if (isDragging) return;
       const count  = Math.min(Math.max(parseInt(cardCountEl.value, 10) || 1, 1), 13);
       const scale  = parseFloat(scaleRangeEl.value);
       const spread = parseFloat(overlapRangeEl.value);
